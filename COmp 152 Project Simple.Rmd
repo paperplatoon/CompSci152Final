@@ -1,0 +1,386 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r setup}
+knitr::opts_knit$set(root.dir ="/Users/bb7/programming")
+setwd("/Users/bb7/programming")
+
+library(BiocManager)
+library(dplyr)
+#BiocManager::install("biomaRt")
+require(GEOquery)
+library(ggplot2)
+library(DESeq2)
+library(limma)
+library(edgeR)
+
+
+myFile <- getGEO(filename='GSE860_series_matrix.txt.gz')
+
+eset <- getGEO("GSE860", GSEMatrix =TRUE)[[1]] 
+head(exprs(eset))
+
+featureData(eset)
+
+
+```
+identified 4512 ‘active’ transcripts as those that had at least one value between 50 and 7500, one ‘Present’ call by Microarray Analysis Suite 5.0 (Affymetrix, Santa Clara), and changed in at least one sample two- fold or more from the geometric mean of all samples
+
+```{r }
+dim(eset)
+#rawData <- read.table("GDS1020_full.soft", sep="\t", header=T)
+#exprs(eset) <- log2(exprs(eset))
+boxplot(exprs(eset), ylim=c(0,1000))
+
+expressionObject <- exprs(eset)
+dim(expressionObject)
+
+hist(expressionObject, breaks=2000, xlim=c(0,300), xlab="values", main = "Frequency Counts of Gene Expression Values")
+
+#415,000
+
+expressionObject[110, ]
+
+sum(expressionObject < 50)/(12600*33)
+
+sum(expressionObject > 7500)/415000
+
+
+
+cutoff <- 50
+drop <- which(apply(expressionObject, 1, max) < cutoff)
+filteredExpressionObject <- expressionObject[-drop,]
+dim(filteredExpressionObject)
+```
+
+
+
+``` {r}
+PData <- pData(eset)
+
+PData <- dplyr::select(PData, title, description.1, description.2, description.3, description.4)
+
+#Create second dataset for testing
+PData2 <- PData
+
+PTSDVec <- c("PTSD", "Control", rep("PTSD", 16), rep("Control", 15))
+#length(PTSDVec)
+
+PData2$description.1 = PTSDVec
+
+PData2.col2 <- substr(PData2$description.2, 12,14)
+ExposureTimeVec <- c("M4", "ER", "M4", "M4", 
+                     "ER", "M4", "ER",
+                     PData2.col2[8:33]
+                     )
+#length(ExposureTimeVec)
+PData2$description.2 = ExposureTimeVec
+
+patientVec <- c("P1", "P14", "P10", "P2", "P3", "P3", "P4", "P4", "P5", "P6",
+                "P6", "P7", "P8", "P9", "P11", "P12", "P12", "P13", "P15", "P15",
+                "P16", "P16", "P17", "P18", "P18", "P19", "P20", "P20", "P21", "P22",
+                "P23", "P24", "P24")
+
+PData2$title = patientVec
+
+PDataFinal <- PData2[, 1:3]
+head(PDataFinal)
+
+PData$title
+
+
+PData2.col3 <- substr(PData$title, (nchar(PData$title)-1), nchar(PData$title))
+decrementVec <- PData2.col3
+
+ERBoolVec <- endsWith(decrementVec, "ER")
+decrementVec <- replace(decrementVec, ERBoolVec, "NA")
+M4BoolVec <- endsWith(decrementVec, "M4")
+decrementVec <- replace(decrementVec, M4BoolVec, "NA")
+DBoolVec <- endsWith(decrementVec, "-D")
+decrementVec <- replace(decrementVec, DBoolVec, "improved")
+decrementVec
+
+PDataFinal$improved = decrementVec
+
+PDataFinal <- dplyr::rename(PDataFinal, patient=title, condition = description.1, TimeFromExposure=description.2)
+PDataFinal
+
+
+table(PDataFinal$TimeFromExposure)
+```
+
+
+``` {r}
+PDataFinal$condition <- as.factor(PDataFinal$condition)
+PDataFinal$TimeFromExposure <- as.factor(PDataFinal$TimeFromExposure)
+PDataFinal$improved <- as.factor(PDataFinal$improved)
+
+
+```
+
+Basic experiment: looking just at condition, identifying diff expressed genes
+1373 diff expressed genes
+```{r}
+i0 <- PDataFinal$condition
+Matrix0 <- model.matrix(~0 + i0)
+
+testFit <- lmFit(filteredExpressionObject, Matrix0)
+c.test <- makeContrasts(i0PTSD - i0Control, levels = colnames(coef(testFit)))
+tmp.test <- contrasts.fit(testFit, c.test)
+tmp.test <- eBayes(tmp.test)
+
+topGenes.test <- topTable(tmp.test, sort.by = "P", n=Inf)
+head(topGenes.test, 100)
+
+hist(topGenes.test$P.Value)
+
+significantGeneList.PTSDvControl <- filter(topGenes.test, P.Value < 0.05)
+dim(significantGeneList.PTSDvControl)
+
+GeneList.PTSDvControl <- row.names(topGenes.test)
+#1373
+```
+
+1.1
+Control over time. 
+Find 271 diff expressed genes
+```{r}
+i1 <- interaction(PDataFinal$condition, PDataFinal$TimeFromExposure)
+
+
+Matrix1 <- model.matrix(~0 + i1)
+
+simpleLinearFit <- lmFit(filteredExpressionObject, Matrix1)
+
+
+c.ControlOverTime <- makeContrasts(i1Control.ER - i1Control.M4, levels = colnames(coef(simpleLinearFit)))
+tmp.ControlOverTime <- contrasts.fit(simpleLinearFit, c.ControlOverTime)
+tmp.ControlOverTime <- eBayes(tmp.ControlOverTime)
+
+topGenes.ControlOverTime <- topTable(tmp.ControlOverTime, sort.by = "P", n=Inf)
+head(topGenes.ControlOverTime, 100)
+
+sum(topGenes.ControlOverTime$P.Value < 0.05)
+
+significantGeneList.ControlERvControlM4 <- filter(topGenes.ControlOverTime, P.Value < 0.05)
+dim(significantGeneList.ControlERvControlM4)
+
+GeneList.ControlERvControlM4 <- row.names(significantGeneList.ControlERvControlM4)
+#271 genes
+```
+We see that our mean-variance trend looks good, so we don't feel the need to worry about filtering out genes.
+
+1.2
+PTSD over time
+```{r}
+c.PTSDOverTime <- makeContrasts(i1PTSD.ER - i1PTSD.M4, levels = colnames(coef(simpleLinearFit)))
+tmp.PTSDOverTime <- contrasts.fit(simpleLinearFit, c.PTSDOverTime)
+tmp.PTSDOverTime <- eBayes(tmp.PTSDOverTime)
+
+topGenes.PTSDOverTime <- topTable(tmp.PTSDOverTime, sort.by = "P", n=Inf)
+
+significantGeneList.PTSDOverTime <- filter(topGenes.PTSDOverTime, P.Value < 0.05)
+dim(significantGeneList.PTSDOverTime)
+
+GeneList.PTSDOverTime <- row.names(significantGeneList.PTSDOverTime)
+#
+```
+```
+
+PTSD vs Control at ER
+```{r}
+c.PTSDERvsControlER <- makeContrasts(i1PTSD.ER - i1Control.ER, levels = colnames(coef(simpleLinearFit)))
+
+c.PTSDERvsControlER
+
+tmp.PTSDERvsControlER <- contrasts.fit(simpleLinearFit, c.PTSDERvsControlER)
+tmp.PTSDERvsControlER <- eBayes(tmp.PTSDERvsControlER)
+
+topGenes.PTSDERvsControlER <- topTable(tmp.PTSDERvsControlER, sort.by = "P", n=Inf)
+#head(topGenes.PTSDvsControlER, 30)
+
+significantGeneList.PTSDERvsControlER <- filter(topGenes.PTSDERvsControlER, P.Value < 0.05)
+dim(significantGeneList.PTSDERvsControlER)
+
+GeneList.PTSDERvsControlER <- row.names(significantGeneList.PTSDERvsControlER)
+#166 genes
+```
+
+
+PTSD vs Control at 4 months
+```{r}
+c.PTSDM4vsControlM4 <- makeContrasts(i1PTSD.M4 - i1Control.M4, levels = colnames(coef(simpleLinearFit)))
+c.PTSDM4vsControlM4
+
+tmp.PTSDM4vsControlM4 <- contrasts.fit(simpleLinearFit, c.PTSDM4vsControlM4)
+tmp.PTSDM4vsControlM4 <- eBayes(tmp.PTSDM4vsControlM4)
+
+topGenes.PTSDM4vsControlM4 <- topTable(tmp.PTSDM4vsControlM4, sort.by = "P", n=Inf)
+#head(topGenes.PTSDvsControlER, 30)
+
+significantGeneList.PTSDM4vsControlM4 <- filter(topGenes.PTSDM4vsControlM4, P.Value < 0.05)
+dim(significantGeneList.PTSDM4vsControlM4)
+
+GeneList.PTSDM4vsControlM4 <- row.names(significantGeneList.PTSDM4vsControlM4)
+#2226 genes
+```
+
+
+Email undergrad 
+Looking at Control Vs PTSD at ER
+```{r}
+library(clusterProfiler)
+library(factoextra)
+library(enrichplot)
+library(vcd)
+library(org.Hs.eg.db)
+library(ade4)
+
+GeneList.PTSDERvsControlER
+
+mart <- useMart("ENSEMBL_MART_ENSEMBL")
+mart <- useDataset("hsapiens_gene_ensembl", mart)
+annotLookupControlvPTSDER <- getBM(
+  mart=mart,
+  attributes=c("affy_hg_u95av2","hgnc_symbol", "entrezgene_id"),
+  filter = "affy_hg_u95av2",
+  values = GeneList.PTSDERvsControlER,
+  uniqueRows=TRUE)
+
+head(annotLookupControlvPTSDER, 20)
+
+goenrichment <- enrichGO(gene = annotLookupControlvPTSDER$entrezgene_id, 
+  OrgDb = org.Hs.eg.db, ont = "BP",
+  pAdjustMethod = "BH", readable = TRUE)
+  
+dim(goenrichment)
+
+#basic bar plot
+  barplot(goenrichment)
+  dotplot(goenrichment, showCategory=20)
+  
+#cool interconnected net plot
+edo <- pairwise_termsim(goenrichment)
+p1 <- emapplot(edo)
+  
+```
+
+
+```{r}
+length(GeneList.PTSDERvsPTSDM4)
+length(GeneList.ControlERvControlM4)
+
+GeneList.PTSDDIFFoverTime <- setdiff(GeneList.PTSDERvsPTSDM4, GeneList.ControlERvControlM4)
+
+annotLookupPTSDMINUScontrolOverTime <- getBM(
+  mart=mart,
+  attributes=c("affy_hg_u95av2","hgnc_symbol", "entrezgene_id"),
+  filter = "affy_hg_u95av2",
+  values = GeneList.PTSDDIFFoverTime,
+  uniqueRows=TRUE)
+  
+  goenrichmentPTSDMINUScontrolOverTime <- enrichGO(gene = annotLookupPTSDMINUScontrolOverTime $entrezgene_id, 
+  OrgDb = org.Hs.eg.db, ont = "BP",
+  pAdjustMethod = "BH", readable = TRUE)
+dim(goenrichmentPTSDMINUScontrolOverTime)
+  
+  barplot(goenrichmentPTSDMINUScontrolOverTime, xlab="test", showCategory=7)
+  dotplot(goenrichmentPTSDMINUScontrolOverTime, showCategory=20)
+```
+
+
+```{r}
+length(GeneList.ControlERvControlM4)
+
+mart <- useMart("ENSEMBL_MART_ENSEMBL")
+mart <- useDataset("hsapiens_gene_ensembl", mart)
+annotLookupControlOverTime <- getBM(
+  mart=mart,
+  attributes=c("affy_hg_u95av2","hgnc_symbol", "entrezgene_id"),
+  filter = "affy_hg_u95av2",
+  values = GeneList.ControlERvControlM4,
+  uniqueRows=TRUE)
+  
+head(annotLookupControlOverTime, 20)
+
+goenrichmentControlOverTime <- enrichGO(gene = annotLookupControlOverTime$entrezgene_id, 
+  OrgDb = org.Hs.eg.db, ont = "BP",
+  pAdjustMethod = "BH", readable = TRUE)
+dim(goenrichmentControlOverTime)
+  
+  barplot(goenrichmentControlOverTime, xlab="test", showCategory=7)
+  dotplot(goenrichmentControlOverTime, showCategory=20)
+  
+```
+
+
+
+```{r, PTSDoverTime}
+
+length(GeneList.PTSDOverTime)
+
+#mart <- useMart("ENSEMBL_MART_ENSEMBL")
+#mart <- useDataset("hsapiens_gene_ensembl", mart)
+annotLookupPTSDOverTime <- getBM(
+  mart=mart,
+  attributes=c("affy_hg_u95av2","hgnc_symbol", "entrezgene_id"),
+  filter = "affy_hg_u95av2",
+  values = GeneList.PTSDOverTime,
+  uniqueRows=TRUE)
+  
+head(annotLookupPTSDOverTime, 20)
+
+goenrichmentPTSDOverTime <- enrichGO(gene = annotLookupPTSDOverTime$entrezgene_id,
+  OrgDb = org.Hs.eg.db, ont = "BP",
+  pAdjustMethod = "BH", readable = TRUE)
+dim(goenrichmentPTSDOverTime)
+  
+  barplot(goenrichmentPTSDOverTime)
+  dotplot(goenrichmentPTSDOverTime, showCategory=20)
+  
+  edoPTSD <- pairwise_termsim(goenrichmentPTSDOverTime)
+  PTSDEMAP <- emapplot(edoPTSD)
+  
+```
+
+```{r}
+length(GeneList.PTSDM4vsControlM4)
+
+#mart <- useMart("ENSEMBL_MART_ENSEMBL")
+#mart <- useDataset("hsapiens_gene_ensembl", mart)
+annotLookupPTSDM4vsControlM4 <- getBM(
+  mart=mart,
+  attributes=c("affy_hg_u95av2","hgnc_symbol", "entrezgene_id"),
+  filter = "affy_hg_u95av2",
+  values = GeneList.PTSDM4vsControlM4,
+  uniqueRows=TRUE)
+  
+head(annotLookupPTSDM4vsControlM4, 20)
+
+goenrichmentPTSDM4vsControlM4 <- enrichGO(gene = annotLookupPTSDM4vsControlM4$entrezgene_id, 
+  OrgDb = org.Hs.eg.db, ont = "BP",
+  pAdjustMethod = "BH", readable = TRUE)
+dim(goenrichmentPTSDM4vsControlM4)
+  
+  dotplot(goenrichmentPTSDM4vsControlM4, showCategory=20)
+  
+  edoPTSDCont <- pairwise_termsim(goenrichmentPTSDM4vsControlM4)
+  PTSDContEMAP <- emapplot(edoPTSDCont)
+```
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+Random papers:
+https://pubmed.ncbi.nlm.nih.gov/12558138/
+https://www.nature.com/articles/tp201791
+https://www.nature.com/articles/aps2011154
+https://www.researchgate.net/publication/331878651_Analysis_of_Genetically_Regulated_Gene_Expression_identifies_a_trauma_type_specific_PTSD_gene_SNRNP35/fulltext/5c919dd145851506d71d4730/Analysis-of-Genetically-Regulated-Gene-Expression-identifies-a-trauma-type-specific-PTSD-gene-SNRNP35.pdf
+https://www.nature.com/articles/s41380-019-0602-2.pdf?origin=ppub
+
